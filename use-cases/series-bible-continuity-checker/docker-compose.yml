@@ -1,0 +1,32 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: series_bible
+      POSTGRES_USER: series_bible
+      POSTGRES_PASSWORD: series_bible
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U series_bible"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+  backend:
+    build:
+      context: ./backend
+      network: host
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://series_bible:series_bible@db:5432/series_bible
+    depends_on:
+      db: {condition: service_healthy}
+    command: sh -c "alembic upgrade head && uvicorn series_bible.api.main:app --host 0.0.0.0 --port 8000"
+    ports: ["8000:8000"]
+  frontend:
+    build: ./frontend
+    depends_on: [backend]
+    ports: ["5173:80"]
+volumes:
+  postgres_data:
