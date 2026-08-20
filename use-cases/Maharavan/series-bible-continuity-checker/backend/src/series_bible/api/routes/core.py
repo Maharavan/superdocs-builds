@@ -61,6 +61,13 @@ async def upload_document(series_id: UUID, session: Session, settings: Config, f
     if not await session.get(Series, series_id):
         raise HTTPException(404, "Series not found")
     content = await file.read(settings.max_upload_bytes + 1)
+    # Build the runner first so a bad LLM/extraction configuration fails fast with a clear
+    # 422 before any document is imported, instead of leaving an imported document with no
+    # analysis behind it.
+    try:
+        runner = WorkflowRunner(session, settings)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     try:
         record = await IngestionService(session, superdocs(settings), settings.max_upload_bytes).ingest(series_id, file.filename or "", content, actor)
         await session.commit()
@@ -69,8 +76,8 @@ async def upload_document(series_id: UUID, session: Session, settings: Config, f
         # while the Bible and findings remained empty.
         run = WorkflowRun(series_id=series_id, state={"document_ids": [str(record.id)]}, status="READY")
         session.add(run)
-        await session.flush()
-        run = await WorkflowRunner(session).execute(run.id)
+        await session.commit()
+        run = await runner.execute(run.id)
         return {
             "id": record.id,
             "filename": record.filename,
@@ -78,6 +85,7 @@ async def upload_document(series_id: UUID, session: Session, settings: Config, f
             "session_id": record.superdocs_session_id,
             "run_id": run.id,
             "run_status": run.status,
+            "run_errors": run.errors,
         }
     except ValueError as error:
         await session.rollback()
@@ -87,14 +95,18 @@ async def upload_document(series_id: UUID, session: Session, settings: Config, f
         raise HTTPException(502, str(error)) from error
 
 @router.post("/series/{series_id}/runs", status_code=201)
-async def create_run(series_id: UUID, payload: RunCreate, session: Session) -> dict[str, Any]:
+async def create_run(series_id: UUID, payload: RunCreate, session: Session, settings: Config) -> dict[str, Any]:
     if not await session.get(Series, series_id):
         raise HTTPException(404, "Series not found")
+    try:
+        runner = WorkflowRunner(session, settings)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     run = WorkflowRun(series_id=series_id, state={"document_ids": [str(value) for value in payload.document_ids]}, status="READY")
     session.add(run)
-    await session.flush()
-    run = await WorkflowRunner(session).execute(run.id)
-    return {"id": run.id, "series_id": run.series_id, "status": run.status, "current_stage": run.current_stage, "completed_stages": run.completed_stages}
+    await session.commit()
+    run = await runner.execute(run.id)
+    return {"id": run.id, "series_id": run.series_id, "status": run.status, "current_stage": run.current_stage, "completed_stages": run.completed_stages, "errors": run.errors}
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: UUID, session: Session) -> dict[str, Any]:
@@ -102,6 +114,20 @@ async def get_run(run_id: UUID, session: Session) -> dict[str, Any]:
     if not run:
         raise HTTPException(404, "Run not found")
     return {"id": run.id, "series_id": run.series_id, "status": run.status, "current_stage": run.current_stage, "completed_stages": run.completed_stages, "state": run.state, "errors": run.errors, "updated_at": run.updated_at}
+
+@router.post("/runs/{run_id}/retry")
+async def retry_run(run_id: UUID, session: Session, settings: Config) -> dict[str, Any]:
+    run = await session.get(WorkflowRun, run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    if run.status not in ("FAILED", "RUNNING"):
+        raise HTTPException(409, "Only a failed or stuck run can be retried")
+    try:
+        runner = WorkflowRunner(session, settings)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    run = await runner.execute(run.id)
+    return {"id": run.id, "series_id": run.series_id, "status": run.status, "current_stage": run.current_stage, "completed_stages": run.completed_stages, "errors": run.errors}
 
 @router.get("/series/{series_id}/bible")
 async def get_bible(series_id: UUID, session: Session) -> list[dict[str, Any]]:

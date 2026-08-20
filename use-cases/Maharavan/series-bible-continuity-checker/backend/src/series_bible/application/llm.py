@@ -82,7 +82,17 @@ class OpenAICompatibleProvider(StructuredLLMProvider):
         if response.status_code == 429:
             await asyncio.sleep(1)
             raise TimeoutError("LLM rate limited")
-        response.raise_for_status()
+        if response.status_code in (401, 403):
+            raise LLMProviderError(
+                f"LLM provider rejected the request ({response.status_code}): the configured "
+                "LLM_API_KEY is missing, invalid, or lacks access to this model."
+            )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise LLMProviderError(
+                f"LLM provider returned {response.status_code}: {response.text[:300]}"
+            ) from error
         body = response.json()
         content = body["choices"][0]["message"]["content"]
         decoded = json.loads(content)

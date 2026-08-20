@@ -58,6 +58,7 @@ class DocumentChunk(Base, TimestampMixin):
     paragraph: Mapped[int | None] = mapped_column(Integer, nullable=True)
     text: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
 
 class BibleFact(Base, TimestampMixin):
     __tablename__ = "bible_facts"
@@ -190,6 +191,39 @@ class AuditEvent(Base):
     entity_id: Mapped[str] = mapped_column(String(100))
     operation: Mapped[str] = mapped_column(String(64), index=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+class StoryEvent(Base):
+    """Episodic memory: structured narrative/process events distinct from technical audit log."""
+    __tablename__ = "story_events"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    series_id: Mapped[UUID] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[UUID | None] = mapped_column(ForeignKey("workflow_runs.id"), nullable=True, index=True)
+    document_id: Mapped[UUID | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
+    chapter_id: Mapped[UUID | None] = mapped_column(ForeignKey("chapters.id"), nullable=True)
+    finding_id: Mapped[UUID | None] = mapped_column(ForeignKey("continuity_findings.id"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    description: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(String(200), default="workflow")
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+class ChatSession(Base, TimestampMixin):
+    __tablename__ = "chat_sessions"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    series_id: Mapped[UUID] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(255), default="Series Bible Chat")
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("chat_sessions.id", ondelete="CASCADE"), index=True)
+    series_id: Mapped[UUID] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text)
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    grounded: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 settings = get_settings()

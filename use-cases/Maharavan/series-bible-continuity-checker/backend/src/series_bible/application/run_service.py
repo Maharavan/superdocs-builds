@@ -54,11 +54,31 @@ class WorkflowRunner:
             "CLASSIFY_FINDINGS": self._classify_node,
             "PERSIST_FINDINGS": self._persist_node,
         })
-        await graph.ainvoke({"run_id": str(run.id), "series_id": str(run.series_id)})
+        try:
+            await graph.ainvoke({"run_id": str(run.id), "series_id": str(run.series_id)})
+        except Exception as error:  # noqa: BLE001 - convert any stage failure into a visible, resumable run state
+            return await self._fail(run_id, run.current_stage, error)
         findings = list((await self.session.scalars(select(ContinuityFinding).where(ContinuityFinding.run_id == run.id, ContinuityFinding.status == "OPEN"))).all())
         run.status = "AWAITING_REVIEW" if findings else "COMPLETED"
         run.current_stage = "HUMAN_REVIEW" if findings else "UPDATE_BIBLE"
         run.state = {**run.state, "finding_ids": [str(item.id) for item in findings]}
+        await self.session.commit()
+        return run
+
+    async def _fail(self, run_id: UUID, failed_stage: str, error: Exception) -> WorkflowRun:
+        """Discard the failed attempt's uncommitted writes and record a visible, resumable failure.
+
+        Without this, an unexpected error (e.g. an invalid LLM key) would crash the request after
+        the uploaded document was already committed, leaving no facts/findings and no explanation.
+        """
+        message = str(error)[:2000] or type(error).__name__
+        await self.session.rollback()
+        run = await self.session.get(WorkflowRun, run_id, with_for_update=True)
+        run.status = "FAILED"
+        run.current_stage = failed_stage
+        run.errors = [*run.errors, {"stage": failed_stage, "message": message}]
+        self.session.add(WorkflowEvent(run_id=run.id, stage=failed_stage, status="FAILED", payload={"error": message}))
+        self.session.add(AuditEvent(run_id=run.id, actor="workflow", entity="workflow_run", entity_id=str(run.id), operation="WORKFLOW_RUN_FAILED", metadata_json={"stage": failed_stage, "error": message[:500]}))
         await self.session.commit()
         return run
 

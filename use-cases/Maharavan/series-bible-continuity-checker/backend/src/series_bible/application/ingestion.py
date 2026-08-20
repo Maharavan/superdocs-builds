@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from series_bible.application.embeddings import HashEmbeddingProvider
+from series_bible.application.episodic import record_story_event
 from series_bible.infrastructure.database import AuditEvent, Chapter, Document, DocumentChunk
 from series_bible.infrastructure.superdocs_service import SuperDocsService, UploadDocumentRequest
 
@@ -17,6 +19,7 @@ ALLOWED_SUFFIXES = {".docx", ".pdf", ".txt", ".rtf", ".md", ".html", ".tex"}
 class IngestionService:
     def __init__(self, session: AsyncSession, superdocs: SuperDocsService, max_bytes: int) -> None:
         self.session, self.superdocs, self.max_bytes = session, superdocs, max_bytes
+        self.embeddings = HashEmbeddingProvider()
 
     async def ingest(self, series_id: UUID, filename: str, content: bytes, actor: str) -> Document:
         safe = PurePath(filename).name
@@ -56,9 +59,19 @@ class IngestionService:
                         paragraph=paragraph,
                         text=passage,
                         content_hash=chunk_hash,
+                        embedding=self.embeddings.embed(passage),
                     )
                 )
         self.session.add(AuditEvent(actor=actor, entity="document", entity_id=str(document.id), operation="DOCUMENT_UPLOADED", metadata_json={"filename": safe, "content_hash": digest}))
+        await record_story_event(
+            self.session,
+            series_id=series_id,
+            event_type="DOCUMENT_UPLOADED",
+            description=f"{safe} was uploaded and imported for analysis.",
+            actor=actor,
+            document_id=document.id,
+            source=safe,
+        )
         return document
 
     @classmethod
