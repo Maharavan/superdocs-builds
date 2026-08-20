@@ -64,7 +64,21 @@ async def upload_document(series_id: UUID, session: Session, settings: Config, f
     try:
         record = await IngestionService(session, superdocs(settings), settings.max_upload_bytes).ingest(series_id, file.filename or "", content, actor)
         await session.commit()
-        return {"id": record.id, "filename": record.filename, "status": record.status, "session_id": record.superdocs_session_id}
+        # Uploading a chapter must also execute the analysis pipeline. Previously
+        # this endpoint only persisted chunks, so the chapter count increased
+        # while the Bible and findings remained empty.
+        run = WorkflowRun(series_id=series_id, state={"document_ids": [str(record.id)]}, status="READY")
+        session.add(run)
+        await session.flush()
+        run = await WorkflowRunner(session).execute(run.id)
+        return {
+            "id": record.id,
+            "filename": record.filename,
+            "status": record.status,
+            "session_id": record.superdocs_session_id,
+            "run_id": run.id,
+            "run_status": run.status,
+        }
     except ValueError as error:
         await session.rollback()
         raise HTTPException(422, str(error)) from error
