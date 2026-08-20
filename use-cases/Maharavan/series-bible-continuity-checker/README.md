@@ -1,5 +1,7 @@
 # Continuum — Series Bible & Continuity Checker
 
+Built by Maharavan.
+
 A production-oriented reference application for maintaining grounded, versioned story canon and reviewing contradictions before either a manuscript or the Series Bible changes.
 
 ## Problem and use case
