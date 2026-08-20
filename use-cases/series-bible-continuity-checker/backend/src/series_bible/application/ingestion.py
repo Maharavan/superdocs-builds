@@ -2,7 +2,10 @@ import base64
 import hashlib
 import re
 from pathlib import PurePath
+from typing import Any
 from uuid import UUID, uuid4
+
+from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from series_bible.infrastructure.database import AuditEvent, Chapter, Document, DocumentChunk
@@ -26,11 +29,14 @@ class IngestionService:
         if existing:
             return existing
         session_id = f"series-{series_id}-document-{uuid4()}"
-        result = await self.superdocs.upload_document(UploadDocumentRequest(filename=safe, file_base64=base64.b64encode(content).decode(), session_id=session_id, return_html=False))
+        result = await self.superdocs.upload_document(UploadDocumentRequest(filename=safe, file_base64=base64.b64encode(content).decode(), session_id=session_id, return_html=True))
         document = Document(series_id=series_id, filename=safe, content_hash=digest, superdocs_session_id=session_id, superdocs_document_id=result.get("document_id"), status="IMPORTED")
         self.session.add(document)
         await self.session.flush()
-        text = self._decode_text(content, PurePath(safe).suffix.lower())
+        html = self._find_html(result)
+        text = self._html_to_text(html) if html else self._decode_text(content, PurePath(safe).suffix.lower())
+        if not text:
+            raise ValueError("SuperDocs imported the document but returned no extractable text")
         if text:
             chapter = Chapter(
                 document_id=document.id,
@@ -54,6 +60,34 @@ class IngestionService:
                 )
         self.session.add(AuditEvent(actor=actor, entity="document", entity_id=str(document.id), operation="DOCUMENT_UPLOADED", metadata_json={"filename": safe, "content_hash": digest}))
         return document
+
+    @classmethod
+    def _find_html(cls, value: Any) -> str | None:
+        if isinstance(value, dict):
+            for key in ("document_html", "html", "content_html"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and "<" in candidate:
+                    return candidate
+            for candidate in value.values():
+                if found := cls._find_html(candidate):
+                    return found
+        if isinstance(value, list):
+            for candidate in value:
+                if found := cls._find_html(candidate):
+                    return found
+        return None
+
+    @staticmethod
+    def _html_to_text(html: str) -> str:
+        soup = BeautifulSoup(html, "html.parser")
+        for element in soup(["script", "style"]):
+            element.decompose()
+        blocks = []
+        for element in soup.find_all(["h1", "h2", "h3", "h4", "p", "li", "blockquote"]):
+            text = element.get_text(" ", strip=True)
+            if text:
+                blocks.append(text)
+        return "\n\n".join(blocks) or soup.get_text("\n", strip=True)
 
     @staticmethod
     def _decode_text(content: bytes, suffix: str) -> str | None:

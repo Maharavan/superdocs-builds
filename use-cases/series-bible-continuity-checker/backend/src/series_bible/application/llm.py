@@ -1,6 +1,11 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+import asyncio
+import json
+
+import httpx
+from pydantic import SecretStr
 from pydantic import TypeAdapter, ValidationError
 from series_bible.domain.schemas import ExtractedFact
 
@@ -35,3 +40,50 @@ class DeterministicTestProvider(LLMProvider):
         self.facts = list(facts)
     async def extract_facts(self, manuscript: str) -> list[ExtractedFact]:
         return self.facts.copy()
+
+class OpenAICompatibleProvider(StructuredLLMProvider):
+    """Structured extraction through an OpenAI-compatible chat-completions API."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: SecretStr,
+        model: str,
+        retries: int = 2,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        super().__init__(self._complete, retries=retries)
+
+    async def _complete(self, prompt: str) -> str:
+        schema = TypeAdapter(list[ExtractedFact]).json_schema()
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": SYSTEM_INSTRUCTION},
+                {
+                    "role": "user",
+                    "content": (
+                        "Return a JSON object with a `facts` array matching this schema: "
+                        f"{json.dumps(schema)}\n{prompt}"
+                    ),
+                },
+            ],
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key.get_secret_value()}"},
+                json=payload,
+            )
+        if response.status_code == 429:
+            await asyncio.sleep(1)
+            raise TimeoutError("LLM rate limited")
+        response.raise_for_status()
+        body = response.json()
+        content = body["choices"][0]["message"]["content"]
+        decoded = json.loads(content)
+        return json.dumps(decoded.get("facts", decoded))

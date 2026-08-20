@@ -86,6 +86,18 @@ OpenAPI is available at `/api/docs`. Main endpoints:
 
 The database image includes pgvector. Migrations run before the API starts.
 
+PDF, DOCX, RTF, Markdown, HTML, TeX, and TXT are parsed by SuperDocs with
+`return_html=true`; the returned semantic blocks are normalized into grounded
+chunks. Set `EXTRACTION_PROVIDER=openai_compatible` plus the `LLM_*` settings
+for production structured extraction. The default grounded rules provide a
+local, deterministic baseline. Bible facts receive local 384-dimensional
+feature-hash embeddings and pgvector performs semantic fallback retrieval.
+
+Set `API_AUTH_TOKEN` in deployed environments. API clients then send it as a
+Bearer token; the web client reads it from the `continuum_api_token` local
+storage key. SuperDocs edits are polled with the real `get_job` MCP tool until
+the proposal is ready, and approval remains a separate human action.
+
 The checked-in `frontend/dist` is the validated production bundle used by the
 network-independent Nginx image. After changing frontend source, run
 `npm install && npm run build` before rebuilding Docker.
@@ -98,9 +110,11 @@ Run `make install`, then `make test` and `make lint`. Unit tests cover grounded 
 
 The six files in `demo/chapters` establish Elena's blue eyes, her relationship to Mark, Castle Raven's location, one magic rule, and chronology. Chapter 6 states that Elena has green eyes. Import Chapters 1–5, run extraction, import Chapter 6, review both exact passages, choose Keep Existing, optionally request a correction, inspect the proposed change, approve it explicitly, then export.
 
-## Known limitations
+## Operational notes
 
-- A production LLM completion callback and embedding provider must be configured for automated extraction and semantic reranking; deterministic extraction exists only for tests.
-- SuperDocs asynchronous job polling should be delegated to a worker for high-volume deployments.
-- Authentication/authorization is deployment-specific and should be placed at the gateway or added before multi-tenant use.
-- The initial migration intentionally mirrors SQLAlchemy metadata; later schema changes should use explicit Alembic operations.
+- The initial Alembic migration is explicit and reviewable, including the
+    pgvector extension, constraints, and indexes.
+- Job polling is bounded by configurable interval and timeout values; timed-out
+    requests fail safely without approving or applying a document change.
+- Bearer authentication is optional for local demos and should be enabled in
+    every shared deployment.

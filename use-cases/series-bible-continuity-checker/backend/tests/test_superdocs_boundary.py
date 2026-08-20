@@ -20,3 +20,15 @@ async def test_upload_uses_live_wire_tool_name():
     service=RecordingService()
     await service.upload_document(UploadDocumentRequest(filename="chapter.md",file_base64="YQ=="))
     assert service.calls[0][0] == "upload_document_base64"
+
+@pytest.mark.asyncio
+async def test_job_polling_uses_real_get_job_tool_and_requires_change_id():
+    service=RecordingService()
+    async def call(name, arguments):
+        service.calls.append((name, arguments))
+        return {"status":"awaiting_approval","pending_changes":[{"change_id":"change-1","before_html":"old","after_html":"new"}]}
+    service._call_tool=call
+    proposal=await service.wait_for_edit_proposal("job-1",poll_seconds=0.001)
+    assert service.calls[0] == ("get_job", {"job_id":"job-1","compact":False})
+    assert proposal.change_id == "change-1"
+    assert proposal.proposed_html == "new"

@@ -1,5 +1,7 @@
 """Typed boundary to the real connected SuperDocs MCP server."""
 from __future__ import annotations
+import asyncio
+import json
 from contextlib import AsyncExitStack
 from typing import Any, Literal
 import httpx
@@ -67,12 +69,20 @@ class ExportDocumentRequest(BaseModel):
     options: ExportOptions | None = None
     source_filename: str | None = Field(default=None, max_length=255)
 
+class EditProposal(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    job_id: str
+    change_id: str
+    original_html: str | None = None
+    proposed_html: str | None = None
+
 class SuperDocsService:
     """Calls exact names returned by the live server's tools/list operation."""
     UPLOAD_TOOL = "upload_document_base64"
     EDIT_TOOL = "chat_async"
     APPROVE_TOOL = "approve_change"
     EXPORT_TOOL = "export_document"
+    GET_JOB_TOOL = "get_job"
 
     def __init__(self, connection: SuperDocsConnection) -> None:
         self._connection = connection
@@ -91,6 +101,39 @@ class SuperDocsService:
     async def export_document(self, request: ExportDocumentRequest) -> dict[str, Any]:
         return await self._call_tool(self.EXPORT_TOOL, request.model_dump(exclude_none=True))
 
+    async def get_job(self, job_id: str, compact: bool = True) -> dict[str, Any]:
+        return await self._call_tool(self.GET_JOB_TOOL, {"job_id": job_id, "compact": compact})
+
+    async def wait_for_edit_proposal(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: float = 90,
+        poll_seconds: float = 1,
+    ) -> EditProposal:
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            result = await self.get_job(job_id, compact=False)
+            status = str(result.get("status", "")).lower()
+            if status in {"failed", "cancelled", "canceled"}:
+                raise SuperDocsServiceError("SuperDocs edit job did not complete")
+            changes = result.get("pending_changes")
+            if not isinstance(changes, list):
+                metadata = result.get("metadata")
+                changes = metadata.get("pending_changes") if isinstance(metadata, dict) else None
+            if status in {"awaiting_approval", "completed"} and isinstance(changes, list) and changes:
+                change = changes[0]
+                if not isinstance(change, dict) or not change.get("change_id"):
+                    raise SuperDocsServiceError("SuperDocs returned an invalid proposed change")
+                return EditProposal(
+                    job_id=job_id,
+                    change_id=str(change["change_id"]),
+                    original_html=change.get("original_html") or change.get("before_html"),
+                    proposed_html=change.get("proposed_html") or change.get("after_html"),
+                )
+            await asyncio.sleep(poll_seconds)
+        raise SuperDocsServiceError("Timed out waiting for the SuperDocs edit proposal")
+
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         headers = {"Authorization": f"Bearer {self._connection.mcp_api_key.get_secret_value()}"}
         try:
@@ -107,4 +150,13 @@ class SuperDocsService:
             raise SuperDocsServiceError(text or "SuperDocs MCP tool returned an error")
         if isinstance(result.structuredContent, dict):
             return result.structuredContent
+        for item in result.content:
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                try:
+                    decoded = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(decoded, dict):
+                    return decoded
         return {"content": [item.model_dump(mode="json") for item in result.content]}

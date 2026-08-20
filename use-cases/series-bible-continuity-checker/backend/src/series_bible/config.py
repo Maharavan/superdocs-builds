@@ -12,7 +12,13 @@ class Settings(BaseSettings):
     superdocs_mcp_url: str = "https://api.superdocs.app/mcp"
     superdocs_mcp_api_key: SecretStr | None = None
     superdocs_mcp_timeout_seconds: float = 60
+    superdocs_job_poll_seconds: float = 1
+    superdocs_job_timeout_seconds: float = 90
     extraction_provider: str = "grounded_rules"
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: SecretStr | None = None
+    llm_model: str = "gpt-4.1-mini"
+    api_auth_token: SecretStr | None = None
 
 @lru_cache
 def get_settings() -> Settings:

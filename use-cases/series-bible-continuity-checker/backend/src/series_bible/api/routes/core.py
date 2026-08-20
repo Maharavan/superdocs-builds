@@ -140,11 +140,20 @@ async def propose_edit(finding_id: UUID, payload: ProposedEditRequest, session: 
     document = await session.scalar(select(Document).where(Document.series_id == finding.series_id).order_by(Document.created_at.desc()))
     if not document:
         raise HTTPException(404, "Target document not found")
-    result = await superdocs(settings).send_edit_instruction(EditInstructionRequest(session_id=document.superdocs_session_id, document_id=document.superdocs_document_id, message=payload.instruction, response_mode="compact"))
+    service = superdocs(settings)
+    result = await service.send_edit_instruction(EditInstructionRequest(session_id=document.superdocs_session_id, document_id=document.superdocs_document_id, message=payload.instruction, response_mode="compact"))
     job_id = result.get("job_id")
     if not job_id:
         raise HTTPException(502, "SuperDocs did not return an edit job ID")
-    change = ProposedChange(finding_id=finding.id, document_id=document.id, instruction=payload.instruction, superdocs_job_id=str(job_id), superdocs_change_id=result.get("change_id"), original_html=result.get("original_html"), proposed_html=result.get("proposed_html"), status="AWAITING_APPROVAL")
+    try:
+        proposal = await service.wait_for_edit_proposal(
+            str(job_id),
+            timeout_seconds=settings.superdocs_job_timeout_seconds,
+            poll_seconds=settings.superdocs_job_poll_seconds,
+        )
+    except SuperDocsServiceError as error:
+        raise HTTPException(502, str(error)) from error
+    change = ProposedChange(finding_id=finding.id, document_id=document.id, instruction=payload.instruction, superdocs_job_id=proposal.job_id, superdocs_change_id=proposal.change_id, original_html=proposal.original_html, proposed_html=proposal.proposed_html, status="READY_FOR_APPROVAL")
     session.add(change)
     await session.flush()
     session.add(AuditEvent(run_id=finding.run_id, actor=payload.actor, entity="proposed_change", entity_id=str(change.id), operation="EDIT_PROPOSED", metadata_json={"job_id": str(job_id)}))
@@ -154,12 +163,13 @@ async def propose_edit(finding_id: UUID, payload: ProposedEditRequest, session: 
 @router.post("/proposed-changes/{change_id}/approve")
 async def approve_proposed_change(change_id: UUID, payload: ApprovalRequest, session: Session, settings: Config) -> dict[str, Any]:
     change = await session.get(ProposedChange, change_id, with_for_update=True)
-    if not change or change.status != "AWAITING_APPROVAL":
+    if not change or change.status != "READY_FOR_APPROVAL":
         raise HTTPException(409, "Change is missing or already decided")
     document = await session.get(Document, change.document_id)
+    finding = await session.get(ContinuityFinding, change.finding_id)
     result = await superdocs(settings).approve_change(ApproveChangeRequest(session_id=document.superdocs_session_id, job_id=change.superdocs_job_id, change_id=change.superdocs_change_id, approved=payload.approved, feedback=payload.feedback))
     change.status = "APPROVED" if payload.approved else "REJECTED"
-    session.add(AuditEvent(actor=payload.actor, entity="proposed_change", entity_id=str(change.id), operation="EDIT_APPROVED" if payload.approved else "EDIT_REJECTED", metadata_json={}))
+    session.add(AuditEvent(run_id=finding.run_id if finding else None, actor=payload.actor, entity="proposed_change", entity_id=str(change.id), operation="EDIT_APPROVED" if payload.approved else "EDIT_REJECTED", metadata_json={"job_id": change.superdocs_job_id, "change_id": change.superdocs_change_id}))
     await session.commit()
     return {"status": change.status, "superdocs": result}
 

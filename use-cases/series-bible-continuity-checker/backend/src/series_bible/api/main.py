@@ -1,4 +1,5 @@
 import time
+import hmac
 from uuid import uuid4
 import structlog
 from fastapi import FastAPI, Request
@@ -19,6 +20,15 @@ app.include_router(router)
 async def request_context(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(uuid4()))
     started = time.perf_counter()
+    if request.url.path.startswith("/api/v1") and settings.api_auth_token is not None:
+        authorization = request.headers.get("Authorization", "")
+        expected = f"Bearer {settings.api_auth_token.get_secret_value()}"
+        if not hmac.compare_digest(authorization, expected):
+            return JSONResponse(
+                status_code=401,
+                content={"error": {"code": "UNAUTHORIZED", "message": "Valid bearer token required", "request_id": request_id}},
+                headers={"WWW-Authenticate": "Bearer", "X-Request-ID": request_id},
+            )
     try:
         response = await call_next(request)
     except Exception:

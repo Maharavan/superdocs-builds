@@ -6,6 +6,8 @@ from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Intege
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
+from series_bible.application.embeddings import EMBEDDING_DIMENSIONS
 from series_bible.config import get_settings
 
 def utcnow() -> datetime:
@@ -73,6 +75,7 @@ class BibleFact(Base, TimestampMixin):
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     supersedes_id: Mapped[UUID | None] = mapped_column(ForeignKey("bible_facts.id"), nullable=True)
     confidence: Mapped[float] = mapped_column(Float)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
 
 class Character(Base, TimestampMixin):
     __tablename__ = "characters"
