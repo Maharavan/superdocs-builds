@@ -102,9 +102,9 @@ storage key. `API_AUTH_TOKEN` must contain only the token value, without the
 SuperDocs edits are polled with the real `get_job` MCP tool until
 the proposal is ready, and approval remains a separate human action.
 
-The checked-in `frontend/dist` is the validated production bundle used by the
-network-independent Nginx image. After changing frontend source, run
-`npm install && npm run build` before rebuilding Docker.
+The frontend Dockerfile builds the production bundle in a Linux Node stage and
+serves it from Nginx. After changing frontend source, rebuild the frontend image
+with `docker compose build frontend`.
 
 In environments where outbound HTTPS is available only through a host-local
 proxy, the Compose backend uses host networking and PostgreSQL is published on
