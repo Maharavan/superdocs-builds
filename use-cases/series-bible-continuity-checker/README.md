@@ -79,8 +79,8 @@ OpenAPI is available at `/api/docs`. Main endpoints:
 
 ## Local setup
 
-1. Copy `backend/.env.example` to `backend/.env`.
-2. Put the real server-side SuperDocs key in `SUPERDOCS_MCP_API_KEY`.
+1. Put the real server-side SuperDocs key in `SUPERDOCS_MCP_API_KEY` in either the project `.env` or `backend/.env`.
+2. Keep the key server-side; never put it in a `VITE_*` variable or frontend code.
 3. Run `docker compose up --build`.
 4. Open <http://localhost:5173>; API docs are at <http://localhost:8000/api/docs>.
 
