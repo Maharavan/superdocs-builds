@@ -95,12 +95,22 @@ feature-hash embeddings and pgvector performs semantic fallback retrieval.
 
 Set `API_AUTH_TOKEN` in deployed environments. API clients then send it as a
 Bearer token; the web client reads it from the `continuum_api_token` local
-storage key. SuperDocs edits are polled with the real `get_job` MCP tool until
+storage key. `API_AUTH_TOKEN` must contain only the token value, without the
+`Bearer ` prefix; the backend adds that scheme when validating requests.
+SuperDocs edits are polled with the real `get_job` MCP tool until
 the proposal is ready, and approval remains a separate human action.
 
 The checked-in `frontend/dist` is the validated production bundle used by the
 network-independent Nginx image. After changing frontend source, run
 `npm install && npm run build` before rebuilding Docker.
+
+In environments where outbound HTTPS is available only through a host-local
+proxy, the Compose backend uses host networking and PostgreSQL is published on
+host port `5433` to preserve access to the MCP endpoint.
+
+PDF and DOCX imports can take several minutes while SuperDocs parses a large
+manuscript. The backend and frontend proxy allow up to five minutes for an
+import; do not retry the same upload while the first request is still running.
 
 ## Testing
 

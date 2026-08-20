@@ -65,9 +65,12 @@ async def upload_document(series_id: UUID, session: Session, settings: Config, f
         record = await IngestionService(session, superdocs(settings), settings.max_upload_bytes).ingest(series_id, file.filename or "", content, actor)
         await session.commit()
         return {"id": record.id, "filename": record.filename, "status": record.status, "session_id": record.superdocs_session_id}
-    except (ValueError, SuperDocsServiceError) as error:
+    except ValueError as error:
         await session.rollback()
         raise HTTPException(422, str(error)) from error
+    except SuperDocsServiceError as error:
+        await session.rollback()
+        raise HTTPException(502, str(error)) from error
 
 @router.post("/series/{series_id}/runs", status_code=201)
 async def create_run(series_id: UUID, payload: RunCreate, session: Session) -> dict[str, Any]:

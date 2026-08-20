@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 25 * 1024 * 1024
     superdocs_mcp_url: str = "https://api.superdocs.app/mcp"
     superdocs_mcp_api_key: SecretStr | None = None
-    superdocs_mcp_timeout_seconds: float = 60
+    superdocs_mcp_timeout_seconds: float = 300
     superdocs_job_poll_seconds: float = 1
     superdocs_job_timeout_seconds: float = 90
     extraction_provider: str = "grounded_rules"

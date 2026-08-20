@@ -136,15 +136,30 @@ class SuperDocsService:
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         headers = {"Authorization": f"Bearer {self._connection.mcp_api_key.get_secret_value()}"}
-        try:
-            async with AsyncExitStack() as stack:
-                client = await stack.enter_async_context(httpx.AsyncClient(headers=headers, timeout=self._connection.timeout_seconds))
-                read, write, _ = await stack.enter_async_context(streamable_http_client(self._connection.mcp_url, http_client=client))
-                session = await stack.enter_async_context(ClientSession(read, write))
-                await session.initialize()
-                result = await session.call_tool(name, arguments)
-        except Exception as error:
-            raise SuperDocsServiceError("SuperDocs MCP operation failed") from error
+        for attempt in range(3):
+            try:
+                async with AsyncExitStack() as stack:
+                    client = await stack.enter_async_context(httpx.AsyncClient(headers=headers, timeout=self._connection.timeout_seconds))
+                    read, write, _ = await stack.enter_async_context(streamable_http_client(self._connection.mcp_url, http_client=client))
+                    session = await stack.enter_async_context(ClientSession(read, write))
+                    await session.initialize()
+                    result = await session.call_tool(name, arguments)
+                break
+            except Exception as error:
+                # SuperDocs can temporarily return 5xx responses while parsing
+                # larger PDFs. Re-establish the MCP session before failing.
+                message = str(error)
+                transient = any(value in message for value in (" 502 ", " 503 ", " 504 ", "All connection attempts failed", "unhandled errors in a TaskGroup"))
+                if attempt < 2 and transient:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                details = [message.strip()]
+                for item in getattr(error, "exceptions", ()):
+                    nested_message = str(item).strip()
+                    if nested_message:
+                        details.append(nested_message)
+                detail = "; ".join(dict.fromkeys(value for value in details if value)) or type(error).__name__
+                raise SuperDocsServiceError(f"SuperDocs MCP operation failed: {detail[:500]}") from error
         if result.isError:
             text = "; ".join(getattr(item, "text", "") for item in result.content)
             raise SuperDocsServiceError(text or "SuperDocs MCP tool returned an error")
