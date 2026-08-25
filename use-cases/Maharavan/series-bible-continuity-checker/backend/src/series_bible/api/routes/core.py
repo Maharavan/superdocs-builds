@@ -1,16 +1,18 @@
 from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from series_bible.application.ingestion import IngestionService
+from series_bible.application.chat import ChatService
 from series_bible.application.bible import BibleService
 from series_bible.application.run_service import WorkflowRunner
 from series_bible.config import Settings, get_settings
 from series_bible.domain.schemas import ApprovalRequest, ExtractedFact, ProposedEditRequest, Resolution, ReviewRequest, SeriesCreate, SeriesView
-from series_bible.infrastructure.database import AuditEvent, BibleFact, ContinuityFinding, Document, Evidence, ProposedChange, ReviewDecision, Series, WorkflowRun, get_session
+from series_bible.infrastructure.auth import AuthenticationError, issue_token, verify_google_credential, verify_token
+from series_bible.infrastructure.database import AuditEvent, BibleFact, ChatMessage, ChatSession, ContinuityFinding, Document, Evidence, ProposedChange, ReviewDecision, Series, User, WorkflowRun, get_session
 from series_bible.infrastructure.superdocs_service import ApproveChangeRequest, EditInstructionRequest, ExportDocumentRequest, ExportOptions, SuperDocsConnection, SuperDocsService, SuperDocsServiceError
 
 router = APIRouter(prefix="/api/v1")
@@ -28,11 +30,58 @@ class ExportRequest(BaseModel):
 class ActorRequest(BaseModel):
     actor: str = Field(min_length=1, max_length=200)
 
+class GoogleCredential(BaseModel):
+    credential: str = Field(min_length=20, max_length=10000)
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=8000)
+
+
+async def current_user(
+    session: Session,
+    settings: Config,
+    authorization: Annotated[str | None, Header()] = None,
+) -> User:
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sign in is required")
+    try:
+        claims = verify_token(authorization.removeprefix("Bearer "), settings)
+        user_id = UUID(str(claims["sub"]))
+    except (AuthenticationError, KeyError, ValueError) as error:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your session has expired. Please sign in again.") from error
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User account not found")
+    return user
+
 
 def superdocs(settings: Settings) -> SuperDocsService:
     if settings.superdocs_mcp_api_key is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "SuperDocs MCP is not configured")
     return SuperDocsService(SuperDocsConnection(mcp_url=settings.superdocs_mcp_url, mcp_api_key=settings.superdocs_mcp_api_key, timeout_seconds=settings.superdocs_mcp_timeout_seconds))
+
+@router.post("/auth/google")
+async def google_sign_in(payload: GoogleCredential, session: Session, settings: Config) -> dict[str, Any]:
+    try:
+        claims = verify_google_credential(payload.credential, settings)
+    except AuthenticationError as error:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(error)) from error
+    user = await session.scalar(select(User).where(User.google_subject == str(claims["sub"])))
+    if user is None:
+        user = User(
+            google_subject=str(claims["sub"]),
+            email=str(claims["email"]).casefold(),
+            display_name=str(claims.get("name") or claims["email"]),
+            avatar_url=claims.get("picture"),
+        )
+        session.add(user)
+    else:
+        user.email = str(claims["email"]).casefold()
+        user.display_name = str(claims.get("name") or user.email)
+        user.avatar_url = claims.get("picture")
+    await session.commit()
+    await session.refresh(user)
+    return {"token": issue_token(user.id, settings), "user": {"id": str(user.id), "email": user.email, "name": user.display_name, "avatar_url": user.avatar_url}}
 
 @router.post("/series", response_model=SeriesView, status_code=201)
 async def create_series(payload: SeriesCreate, session: Session) -> Series:
@@ -144,6 +193,24 @@ async def get_findings(series_id: UUID, session: Session) -> list[dict[str, Any]
         citation = lambda source: None if source is None else {"chapter": source.chapter, "section": source.section, "page": source.page, "chunk_id": source.chunk_id, "evidence_text": source.exact_text}
         result.append({"id": item.id, "type": item.type, "entity": item.entity, "attribute": item.attribute, "existing_value": item.existing_value, "new_value": item.new_value, "existing_evidence": citation(old_source), "new_evidence": citation(new_source), "explanation": item.explanation, "confidence": item.confidence, "severity": item.severity, "status": item.status})
     return result
+
+@router.get("/series/{series_id}/chat")
+async def chat_history(series_id: UUID, user: Annotated[User, Depends(current_user)], session: Session) -> dict[str, Any]:
+    chat_session = await session.scalar(
+        select(ChatSession).where(ChatSession.series_id == series_id, ChatSession.user_id == user.id).order_by(ChatSession.updated_at.desc())
+    )
+    if chat_session is None:
+        return {"session_id": None, "messages": []}
+    messages = (await session.scalars(select(ChatMessage).where(ChatMessage.session_id == chat_session.id).order_by(ChatMessage.created_at))).all()
+    return {"session_id": chat_session.id, "messages": [{"id": message.id, "role": message.role, "content": message.content, "citations": message.citations, "grounded": message.grounded, "created_at": message.created_at} for message in messages]}
+
+@router.post("/series/{series_id}/chat")
+async def ask_chat(series_id: UUID, payload: ChatRequest, user: Annotated[User, Depends(current_user)], session: Session) -> dict[str, Any]:
+    if not await session.get(Series, series_id):
+        raise HTTPException(404, "Series not found")
+    answer = await ChatService(session).ask(series_id, payload.question, user.id)
+    await session.commit()
+    return answer
 
 async def resolve(finding_id: UUID, resolution: Resolution, payload: ActorRequest | ReviewRequest, session: AsyncSession) -> dict[str, str]:
     finding = await session.get(ContinuityFinding, finding_id, with_for_update=True)

@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_model: str = "gpt-4.1-mini"
     api_auth_token: SecretStr | None = None
+    google_client_id: str | None = None
+    jwt_secret: SecretStr | None = None
+    jwt_expiry_hours: int = 168
 
 @lru_cache
 def get_settings() -> Settings:

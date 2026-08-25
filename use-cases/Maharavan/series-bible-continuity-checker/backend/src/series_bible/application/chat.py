@@ -124,7 +124,7 @@ class ChatService:
         self.session = session
         self.embeddings = HashEmbeddingProvider()
 
-    async def ask(self, series_id: UUID, question: str, actor: str) -> dict[str, object]:
+    async def ask(self, series_id: UUID, question: str, user_id: UUID) -> dict[str, object]:
         known_entities = await self._known_entities(series_id)
         candidates = extract_candidate_entities(question, known_entities)
 
@@ -135,10 +135,10 @@ class ChatService:
         answer = compose_grounded_answer(question, fact_lines, event_lines, chunk_lines)
 
         chat_session = await self.session.scalar(
-            select(ChatSession).where(ChatSession.series_id == series_id).order_by(ChatSession.created_at)
+            select(ChatSession).where(ChatSession.series_id == series_id, ChatSession.user_id == user_id).order_by(ChatSession.updated_at.desc())
         )
         if chat_session is None:
-            chat_session = ChatSession(series_id=series_id)
+            chat_session = ChatSession(series_id=series_id, user_id=user_id)
             self.session.add(chat_session)
             await self.session.flush()
 
@@ -154,6 +154,7 @@ class ChatService:
             grounded=answer.grounded,
         )
         self.session.add(assistant_message)
+        chat_session.updated_at = assistant_message.created_at
         await self.session.flush()
 
         return {

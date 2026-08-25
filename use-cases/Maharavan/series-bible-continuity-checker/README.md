@@ -82,9 +82,10 @@ OpenAPI is available at `/api/docs`. Main endpoints:
 ## Local setup
 
 1. Put the real server-side SuperDocs key in `SUPERDOCS_MCP_API_KEY` in either the project `.env` or `backend/.env`.
-2. Keep the key server-side; never put it in a `VITE_*` variable or frontend code.
-3. Run `docker compose up --build`.
-4. Open <http://localhost:5173>; API docs are at <http://localhost:8000/api/docs>.
+2. Configure Google sign-in with `GOOGLE_CLIENT_ID` (the OAuth web-client ID) and a long random `JWT_SECRET`. The client ID is intentionally passed to the frontend build; the JWT secret and SuperDocs key remain server-side.
+3. In Google Cloud, add `http://localhost:5173` as an authorized JavaScript origin for the OAuth client.
+4. Run `docker compose up --build`.
+5. Open <http://localhost:5173>; API docs are at <http://localhost:8000/api/docs>.
 
 The database image includes pgvector. Migrations run before the API starts.
 
@@ -105,6 +106,16 @@ the proposal is ready, and approval remains a separate human action.
 The frontend Dockerfile builds the production bundle in a Linux Node stage and
 serves it from Nginx. After changing frontend source, rebuild the frontend image
 with `docker compose build frontend`.
+
+## User-owned document chat
+
+The unified series workspace displays the overview, current Series Bible, and
+continuity review queue beside a document chat. Google ID tokens are verified
+by the backend, which issues a short-lived signed application session. Each
+chat session is linked to the authenticated user and series, so a user's
+grounded chat history is restored after they sign in again. Chat answers remain
+read-only: they retrieve Bible facts, story events, and manuscript chunks and
+include source citations rather than changing canon or documents.
 
 In environments where outbound HTTPS is available only through a host-local
 proxy, the Compose backend uses host networking and PostgreSQL is published on

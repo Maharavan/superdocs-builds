@@ -27,6 +27,14 @@ class Series(Base, TimestampMixin):
     description: Mapped[str] = mapped_column(Text, default="")
     version: Mapped[int] = mapped_column(Integer, default=1)
 
+class User(Base, TimestampMixin):
+    __tablename__ = "users"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    google_subject: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(255), default="")
+    avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
 class Document(Base, TimestampMixin):
     __tablename__ = "documents"
     __table_args__ = (UniqueConstraint("series_id", "content_hash", name="uq_document_series_hash"),)
@@ -212,6 +220,7 @@ class StoryEvent(Base):
 class ChatSession(Base, TimestampMixin):
     __tablename__ = "chat_sessions"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     series_id: Mapped[UUID] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(255), default="Series Bible Chat")
 

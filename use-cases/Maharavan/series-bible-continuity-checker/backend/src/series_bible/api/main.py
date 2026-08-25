@@ -8,22 +8,32 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from series_bible.api.routes.core import router
 from series_bible.config import get_settings
+from series_bible.infrastructure.auth import AuthenticationError, verify_token
 from series_bible.infrastructure.database import engine
 
 settings = get_settings()
 log = structlog.get_logger()
 app = FastAPI(title=settings.app_name, version="1.0.0", docs_url="/api/docs")
-app.add_middleware(CORSMiddleware, allow_origins=settings.allowed_origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Request-ID"])
+app.add_middleware(CORSMiddleware, allow_origins=settings.allowed_origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Request-ID", "Authorization"])
 app.include_router(router)
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(uuid4()))
     started = time.perf_counter()
-    if request.url.path.startswith("/api/v1") and settings.api_auth_token is not None:
+    is_google_login = request.url.path == "/api/v1/auth/google"
+    if request.url.path.startswith("/api/v1") and settings.api_auth_token is not None and not is_google_login:
         authorization = request.headers.get("Authorization", "")
         expected = f"Bearer {settings.api_auth_token.get_secret_value()}"
-        if not hmac.compare_digest(authorization, expected):
+        is_static_token = hmac.compare_digest(authorization, expected)
+        is_user_token = False
+        if authorization.startswith("Bearer ") and settings.jwt_secret is not None:
+            try:
+                verify_token(authorization.removeprefix("Bearer "), settings)
+                is_user_token = True
+            except AuthenticationError:
+                pass
+        if not is_static_token and not is_user_token:
             return JSONResponse(
                 status_code=401,
                 content={"error": {"code": "UNAUTHORIZED", "message": "Valid bearer token required", "request_id": request_id}},

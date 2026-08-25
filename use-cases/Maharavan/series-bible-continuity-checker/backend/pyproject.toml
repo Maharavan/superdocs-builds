@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "series-bible"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1", "pydantic>=2.9,<3", "pydantic-settings>=2.5,<3", "sqlalchemy[asyncio]>=2.0,<3", "asyncpg>=0.29,<1", "alembic>=1.13,<2", "pgvector>=0.3,<1", "langgraph>=0.2,<1", "httpx>=0.27,<1", "mcp>=1,<2", "python-multipart>=0.0.9,<1", "structlog>=24,<26", "beautifulsoup4>=4.12,<5"]
+dependencies = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1", "pydantic>=2.9,<3", "pydantic-settings>=2.5,<3", "sqlalchemy[asyncio]>=2.0,<3", "asyncpg>=0.29,<1", "alembic>=1.13,<2", "pgvector>=0.3,<1", "langgraph>=0.2,<1", "httpx>=0.27,<1", "mcp>=1,<2", "python-multipart>=0.0.9,<1", "structlog>=24,<26", "beautifulsoup4>=4.12,<5", "PyJWT>=2.8,<3", "google-auth>=2.25,<3"]
 [project.optional-dependencies]
 test = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1", "aiosqlite>=0.20,<1", "ruff>=0.6,<1", "mypy>=1.11,<2"]
 [tool.pytest.ini_options]
