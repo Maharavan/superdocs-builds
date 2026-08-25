@@ -154,6 +154,9 @@ class ChatService:
             grounded=answer.grounded,
         )
         self.session.add(assistant_message)
+        # `created_at` is assigned by SQLAlchemy during the flush; do not copy
+        # it before then or overwrite the non-null session timestamp with None.
+        await self.session.flush()
         chat_session.updated_at = assistant_message.created_at
         await self.session.flush()
 
