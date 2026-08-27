@@ -13,7 +13,7 @@ from series_bible.application.run_service import WorkflowRunner
 from series_bible.config import Settings, get_settings
 from series_bible.domain.schemas import ApprovalRequest, ExtractedFact, ProposedEditRequest, Resolution, ReviewRequest, SeriesCreate, SeriesView
 from series_bible.infrastructure.auth import AuthenticationError, issue_token, verify_google_credential, verify_token
-from series_bible.infrastructure.database import AuditEvent, BibleFact, ChatMessage, ChatSession, ContinuityFinding, Document, Evidence, ProposedChange, ReviewDecision, Series, User, WorkflowRun, get_session
+from series_bible.infrastructure.database import AuditEvent, BibleFact, ChatMessage, ChatSession, ContinuityFinding, Document, Evidence, ProposedChange, ReviewDecision, Series, StoryEvent, User, WorkflowRun, get_session
 from series_bible.infrastructure.superdocs_service import ApproveChangeRequest, EditInstructionRequest, ExportDocumentRequest, ExportOptions, SuperDocsConnection, SuperDocsService, SuperDocsServiceError
 
 router = APIRouter(prefix="/api/v1")
@@ -105,6 +105,27 @@ async def get_series(series_id: UUID, session: Session) -> dict[str, Any]:
     for name, model in (("chapters", Document), ("facts", BibleFact), ("findings", ContinuityFinding)):
         counts[name] = await session.scalar(select(func.count()).select_from(model).where(model.series_id == series_id))
     return {"id": record.id, "name": record.name, "description": record.description, "created_at": record.created_at, "counts": counts}
+
+@router.delete("/series/{series_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_series(series_id: UUID, session: Session) -> None:
+    """Permanently remove a series and its cascade-owned workspace data."""
+    record = await session.get(Series, series_id)
+    if record is None:
+        raise HTTPException(404, "Series not found")
+    # These dependent records intentionally preserve a durable audit trail in
+    # normal operation, so their database foreign keys do not cascade. Delete
+    # them in dependency order for an explicit permanent series deletion.
+    run_ids = select(WorkflowRun.id).where(WorkflowRun.series_id == series_id)
+    finding_ids = select(ContinuityFinding.id).where(ContinuityFinding.series_id == series_id)
+    await session.execute(delete(ReviewDecision).where(ReviewDecision.finding_id.in_(finding_ids)))
+    await session.execute(delete(ProposedChange).where(ProposedChange.finding_id.in_(finding_ids)))
+    # Evidence points at documents and is intentionally not configured with a
+    # database cascade; remove it before the series delete cascades documents.
+    await session.execute(delete(Evidence).where(Evidence.document_id.in_(select(Document.id).where(Document.series_id == series_id))))
+    await session.execute(delete(StoryEvent).where(StoryEvent.series_id == series_id))
+    await session.execute(delete(AuditEvent).where(AuditEvent.run_id.in_(run_ids)))
+    await session.delete(record)
+    await session.commit()
 
 @router.post("/series/{series_id}/documents", status_code=201)
 async def upload_document(series_id: UUID, session: Session, settings: Config, file: UploadFile = File(...), actor: str = Form("user")) -> dict[str, Any]:

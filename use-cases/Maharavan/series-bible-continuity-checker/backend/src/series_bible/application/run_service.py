@@ -117,17 +117,31 @@ class WorkflowRunner:
     async def _retrieve_node(self, state: AnalysisState) -> dict[str, object]:
         retriever = FactRetriever(self.session)
         candidates = []
+        # Retain the first supported statement for each claim in this analysis
+        # batch. This catches contradictions within one upload/chapter, before
+        # either statement is written to the Series Bible.
+        batch_facts: dict[tuple[str, str], ExtractedFact] = {}
         for fact in state.get("facts", []):
             matches = await retriever.retrieve(self.run.series_id, fact.entity, fact.attribute, limit=1)
-            candidates.append(matches[0] if matches else None)
+            key = (fact.entity.casefold().strip(), fact.attribute.casefold().strip())
+            candidates.append(matches[0] if matches else batch_facts.get(key))
+            batch_facts.setdefault(key, fact)
         await self._checkpoint(self.run, "RETRIEVE_RELEVANT_FACTS", {"candidates": len(candidates)})
         return {"candidates": candidates}
 
     async def _continuity_node(self, state: AnalysisState) -> dict[str, object]:
         comparisons = []
         for fact, existing in zip(state.get("facts", []), state.get("candidates", []), strict=True):
-            existing_fact = await self._as_fact(existing) if existing else None
-            comparisons.append(self.continuity.compare(existing_fact, fact))
+            existing_fact = await self._as_fact(existing) if isinstance(existing, BibleFact) else existing
+            result = self.continuity.compare(existing_fact, fact)
+            if isinstance(existing, ExtractedFact) and result.type in (FindingType.CONTRADICTION, FindingType.POSSIBLE_CONTRADICTION):
+                result = result.__class__(
+                    result.type,
+                    f"Two statements in the same analysis batch conflict: '{existing.value}' and '{fact.value}'.",
+                    result.confidence,
+                    result.severity,
+                )
+            comparisons.append(result)
         await self._checkpoint(self.run, "CHECK_CONTINUITY", {"comparisons": len(comparisons)})
         return {"comparisons": comparisons}
 
@@ -192,7 +206,10 @@ class WorkflowRunner:
                 record = await bible.add_version(run.series_id, fact)
                 self.session.add(AuditEvent(run_id=run.id, actor="workflow", entity="bible_fact", entity_id=str(record.id), operation="BIBLE_FACT_CREATED", metadata_json={"entity": fact.entity, "attribute": fact.attribute}))
             elif result.type in (FindingType.CONTRADICTION, FindingType.POSSIBLE_CONTRADICTION):
-                fingerprint = hashlib.sha256(f"{existing.id if existing else ''}|{fact.entity}|{fact.attribute}|{fact.value}|{fact.source.chunk_id}".encode()).hexdigest()
+                existing_id = existing.id if isinstance(existing, BibleFact) else None
+                existing_value = existing.value if existing else None
+                existing_source = await self._as_fact(existing) if isinstance(existing, BibleFact) else existing
+                fingerprint = hashlib.sha256(f"{existing_id or existing_source.source.chunk_id if existing_source else ''}|{fact.entity}|{fact.attribute}|{fact.value}|{fact.source.chunk_id}".encode()).hexdigest()
                 duplicate = await self.session.scalar(
                     select(ContinuityFinding).where(
                         ContinuityFinding.run_id == run.id,
@@ -201,9 +218,11 @@ class WorkflowRunner:
                 )
                 if duplicate:
                     continue
-                finding = ContinuityFinding(run_id=run.id, series_id=run.series_id, existing_fact_id=existing.id if existing else None, fingerprint=fingerprint, type=result.type.value, entity=fact.entity, attribute=fact.attribute, existing_value=existing.value if existing else None, new_value=fact.value, explanation=result.explanation, confidence=result.confidence, severity=result.severity, new_fact=fact.model_dump(mode="json"))
+                finding = ContinuityFinding(run_id=run.id, series_id=run.series_id, existing_fact_id=existing_id, fingerprint=fingerprint, type=result.type.value, entity=fact.entity, attribute=fact.attribute, existing_value=existing_value, new_value=fact.value, explanation=result.explanation, confidence=result.confidence, severity=result.severity, new_fact=fact.model_dump(mode="json"))
                 self.session.add(finding)
                 await self.session.flush()
+                if existing_source is not None:
+                    self.session.add(Evidence(finding_id=finding.id, document_id=existing_source.source.document_id, chapter=existing_source.source.chapter, section=existing_source.source.section, page=existing_source.source.page, chunk_id=existing_source.source.chunk_id, exact_text=existing_source.source.evidence_text, role="OLD"))
                 self.session.add(Evidence(finding_id=finding.id, document_id=fact.source.document_id, chapter=fact.source.chapter, section=fact.source.section, page=fact.source.page, chunk_id=fact.source.chunk_id, exact_text=fact.source.evidence_text, role="NEW"))
                 self.session.add(AuditEvent(run_id=run.id, actor="workflow", entity="finding", entity_id=str(finding.id), operation="FINDING_CREATED", metadata_json={"type": result.type.value}))
 
