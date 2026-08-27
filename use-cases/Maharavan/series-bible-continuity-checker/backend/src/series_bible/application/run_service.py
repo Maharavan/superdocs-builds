@@ -185,6 +185,7 @@ class WorkflowRunner:
     ) -> list[ExtractedFact]:
         if self.llm is None:
             return self.extractor.extract(chunks, chapter_names)
+        rule_facts = self.extractor.extract(chunks, chapter_names)
         sources = [
             {
                 "document_id": str(chunk.document_id),
@@ -196,14 +197,30 @@ class WorkflowRunner:
             }
             for chunk in chunks
         ]
-        facts = await self.llm.extract_facts(json.dumps(sources))
+        try:
+            facts = await self.llm.extract_facts(json.dumps(sources))
+        except Exception:
+            # An unavailable semantic provider must not prevent the chapter's
+            # explicit claims from entering continuity review.
+            return rule_facts
         by_chunk = {chunk.source_chunk_id: chunk.text for chunk in chunks}
         grounded = []
         for fact in facts:
             source_text = by_chunk.get(fact.source.chunk_id)
             if source_text is not None and fact.source.evidence_text in source_text:
                 grounded.append(fact)
-        return grounded
+        # Semantic extraction broadens coverage; deterministic facts protect
+        # known explicit patterns and ensure LLM omissions do not hide a conflict.
+        merged: dict[tuple[str, str, str, str], ExtractedFact] = {}
+        for fact in [*rule_facts, *grounded]:
+            key = (
+                fact.source.chunk_id,
+                fact.entity.casefold().strip(),
+                fact.attribute.casefold().strip(),
+                fact.value.casefold().strip(),
+            )
+            merged[key] = fact
+        return list(merged.values())
 
     async def _persist_results(self, run: WorkflowRun, facts, candidates, comparisons) -> None:
         bible = BibleService(self.session)
