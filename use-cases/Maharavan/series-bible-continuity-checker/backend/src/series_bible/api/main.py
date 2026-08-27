@@ -14,7 +14,7 @@ from series_bible.infrastructure.database import engine
 settings = get_settings()
 log = structlog.get_logger()
 app = FastAPI(title=settings.app_name, version="1.0.0", docs_url="/api/docs")
-app.add_middleware(CORSMiddleware, allow_origins=settings.allowed_origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Request-ID", "Authorization"])
+app.add_middleware(CORSMiddleware, allow_origins=settings.allowed_origins, allow_credentials=False, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "X-Request-ID", "Authorization"])
 app.include_router(router)
 
 @app.middleware("http")

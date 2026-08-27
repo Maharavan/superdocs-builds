@@ -113,9 +113,14 @@ The unified series workspace displays the overview, current Series Bible, and
 continuity review queue beside a document chat. Google ID tokens are verified
 by the backend, which issues a short-lived signed application session. Each
 chat session is linked to the authenticated user and series, so a user's
-grounded chat history is restored after they sign in again. Chat answers remain
-read-only: they retrieve Bible facts, story events, and manuscript chunks and
-include source citations rather than changing canon or documents.
+grounded chat history is restored after they sign in again. The chat uses a
+hybrid RAG route: greetings and other normal conversational messages receive a
+natural response without an unnecessary document lookup. Questions about the
+manuscript, Series Bible, people, places, chronology, or prior document
+discussion retrieve semantically relevant chunks from pgvector alongside Bible
+facts and story events, then include source-document citations. Relevant open
+contradictions are surfaced for a human decision instead of being chosen
+automatically. Chat remains read-only and never changes canon or documents.
 
 In environments where outbound HTTPS is available only through a host-local
 proxy, the Compose backend uses host networking and PostgreSQL is published on

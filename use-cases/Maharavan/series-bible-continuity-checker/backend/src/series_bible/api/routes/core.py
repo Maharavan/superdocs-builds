@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from series_bible.application.ingestion import IngestionService
 from series_bible.application.chat import ChatService
@@ -205,12 +206,23 @@ async def chat_history(series_id: UUID, user: Annotated[User, Depends(current_us
     return {"session_id": chat_session.id, "messages": [{"id": message.id, "role": message.role, "content": message.content, "citations": message.citations, "grounded": message.grounded, "created_at": message.created_at} for message in messages]}
 
 @router.post("/series/{series_id}/chat")
-async def ask_chat(series_id: UUID, payload: ChatRequest, user: Annotated[User, Depends(current_user)], session: Session) -> dict[str, Any]:
+async def ask_chat(series_id: UUID, payload: ChatRequest, user: Annotated[User, Depends(current_user)], session: Session, settings: Config) -> dict[str, Any]:
     if not await session.get(Series, series_id):
         raise HTTPException(404, "Series not found")
-    answer = await ChatService(session).ask(series_id, payload.question, user.id)
+    answer = await ChatService(session, settings).ask(series_id, payload.question, user.id)
     await session.commit()
     return answer
+
+@router.delete("/series/{series_id}/chat", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_chat(series_id: UUID, user: Annotated[User, Depends(current_user)], session: Session) -> None:
+    """Clear only the current user's persistent chat history for this series."""
+    chat_session = await session.scalar(
+        select(ChatSession).where(ChatSession.series_id == series_id, ChatSession.user_id == user.id)
+    )
+    if chat_session is not None:
+        await session.execute(delete(ChatMessage).where(ChatMessage.session_id == chat_session.id))
+        await session.delete(chat_session)
+        await session.commit()
 
 async def resolve(finding_id: UUID, resolution: Resolution, payload: ActorRequest | ReviewRequest, session: AsyncSession) -> dict[str, str]:
     finding = await session.get(ContinuityFinding, finding_id, with_for_update=True)
