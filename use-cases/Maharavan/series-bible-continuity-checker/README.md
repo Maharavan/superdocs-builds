@@ -12,19 +12,92 @@ Long-running fiction accumulates character details, relationships, locations, ch
 
 ```mermaid
 flowchart TD
-    UI[React TypeScript UI] --> API[FastAPI v1 API]
-    API --> APP[Application services]
-    APP --> CONT[Continuity engine]
-    APP --> SD[SuperDocsService]
-    CONT --> DB[(PostgreSQL and pgvector)]
-    SD --> MCP[Connected SuperDocs MCP]
-    MCP --> UP[Upload]
-    MCP --> ED[Edit instruction]
-    MCP --> AP[Human-approved change]
-    MCP --> EX[Export]
+     Author[Author] --> Web[React + Vite UI<br/>Nginx :5173]
+     Web -->|Google ID token| Auth[FastAPI authentication]
+     Web -->|Bearer application JWT| API[FastAPI v1 API<br/>:8000]
+     Auth --> Google[Google Identity Services]
+     Auth --> API
+
+     API --> Series[Series workspace service]
+     API --> Chat[Read-only hybrid chat]
+     API --> Workflow[Durable LangGraph workflow]
+     API --> Changes[Human-approved change service]
+
+     Workflow --> Import[SuperDocs ingestion adapter]
+     Import --> MCP[SuperDocs MCP]
+     MCP --> Documents[Source documents<br/>upload, edit, approval, export]
+     Workflow --> Extract[Semantic LLM extraction<br/>with grounded-rule fallback]
+     Extract --> Validate[Evidence and schema validation]
+     Validate --> Retrieve[Claim retrieval]
+     Retrieve --> Compare[Continuity engine]
+     Compare --> Review[Findings review queue]
+
+     Chat --> Route{Document question?}
+     Route -->|No| General[Conversational LLM]
+     Route -->|Yes| RAG[pgvector semantic retrieval]
+     RAG --> Grounded[Grounded LLM response<br/>with citations and conflicts]
+
+     Series --> Store[(PostgreSQL + pgvector)]
+     Workflow --> Store
+     Retrieve --> Store
+     Review --> Store
+     Chat --> Store
+     Changes --> Store
+     Changes --> MCP
 ```
 
-The application owns facts, provenance, findings, decisions, workflow state, and audit history. SuperDocs remains the source of truth for document upload, editing, approval, and export.
+### Deployment and ownership
+
+The `frontend` container serves the React application through Nginx on port
+`5173`. The `backend` container runs FastAPI and Alembic migrations on port
+`8000`; it uses host networking in this development Compose configuration so it
+can reach a host-local outbound proxy. PostgreSQL with pgvector is the durable
+store and is published on port `5433`.
+
+The backend owns series metadata, document chunks, extracted facts, immutable
+Bible fact versions, evidence, workflow checkpoints, findings, review decisions,
+audit history, users, and user-owned chat sessions. SuperDocs remains the source
+of truth for the original document and its approved edits/exports; its API key
+is never sent to the browser.
+
+### Ingestion and continuity workflow
+
+1. The author uploads a supported manuscript format through the API.
+2. The SuperDocs adapter parses it into semantic HTML/blocks, which the backend
+    stores as grounded document chunks with document, chapter, section, and page
+    provenance where available.
+3. A durable LangGraph run extracts explicit claims. The configured
+    OpenAI-compatible semantic extractor recognises equivalent wording; local
+    grounded rules run alongside it and provide a safe fallback if the provider
+    fails or omits an explicit pattern.
+4. Every extracted fact must pass Pydantic validation and retain exact supporting
+    evidence before it can enter comparison.
+5. `FactRetriever` finds relevant current Bible facts using normalized claims and
+    pgvector semantic fallback retrieval. The continuity engine compares values.
+6. The workflow also compares every pair of facts sharing the same document,
+    chapter, entity, and attribute. This detects contradictions inside one newly
+    uploaded chapter, even before a fact is accepted into the Bible.
+7. New facts become versioned Bible facts. Contradictions create a review finding
+    with `OLD` and `NEW` evidence records; they never overwrite canon automatically.
+
+For example, semantic extraction normalizes both “Marcus was Elena's cousin” and
+“Elena's younger brother Marcus” to Elena's `relationship_marcus` claim. Their
+different values produce an intra-chapter contradiction with both passages shown
+in Findings.
+
+### Authentication and chat retrieval
+
+Google Identity Services issues an ID token to the browser. The backend verifies
+that token, creates or updates the local user record, and returns a signed
+application JWT. The JWT scopes persisted chat history to that user and series.
+
+Chat is read-only. Its router sends greetings and general questions to the
+conversational LLM without unnecessary retrieval. Questions about the manuscript,
+Bible, characters, places, chronology, or conflicts use hybrid retrieval across
+Bible facts, story events, and pgvector-ranked manuscript chunks. The response is
+generated only from the retrieved context, returns citations from stored evidence,
+and surfaces relevant unresolved findings instead of selecting canon on the
+author's behalf.
 
 ## Series Bible model
 
@@ -33,6 +106,11 @@ The application owns facts, provenance, findings, decisions, workflow state, and
 ## Continuity engine and retrieval
 
 `FactRetriever` first narrows candidates by series, normalized entity, attribute, and current status. `ContinuityService` distinguishes new information, compatible updates, possible contradictions, and grounded contradictions. This avoids an all-to-all comparison. The retrieval seam permits pgvector reranking without coupling domain rules to an embedding provider.
+
+Within a single chapter, an additional all-pairs comparison groups facts by
+document, chapter, normalized entity, and attribute. This is intentionally
+independent of Bible retrieval, so a first upload can still report inconsistent
+claims inside itself.
 
 ## Agent workflow and crash recovery
 
@@ -91,10 +169,11 @@ The database image includes pgvector. Migrations run before the API starts.
 
 PDF, DOCX, RTF, Markdown, HTML, TeX, and TXT are parsed by SuperDocs with
 `return_html=true`; the returned semantic blocks are normalized into grounded
-chunks. Set `EXTRACTION_PROVIDER=openai_compatible` plus the `LLM_*` settings
-for production structured extraction. The default grounded rules provide a
-local, deterministic baseline. Bible facts receive local 384-dimensional
-feature-hash embeddings and pgvector performs semantic fallback retrieval.
+chunks. `EXTRACTION_PROVIDER=openai_compatible` enables semantic structured
+extraction through the configured `LLM_*` settings. Explicit local grounded rules
+are merged with semantic results and act as a fallback if semantic extraction is
+unavailable. Bible facts receive local 384-dimensional feature-hash embeddings
+and pgvector performs semantic fallback retrieval.
 
 Set `API_AUTH_TOKEN` in deployed environments. API clients then send it as a
 Bearer token; the web client reads it from the `continuum_api_token` local
