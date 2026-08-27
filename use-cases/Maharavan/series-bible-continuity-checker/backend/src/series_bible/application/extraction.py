@@ -17,7 +17,15 @@ class GroundedRuleExtractor:
     """
 
     EYES = re.compile(r"\b(?P<name>[A-Z][a-z]+)(?:'s|\s+has|\s+had)?\s+.*?\b(?P<value>blue|green|brown|gray|grey|hazel|silver)\s+eyes\b", re.I)
-    SIBLING = re.compile(r"\b(?P<a>[A-Z][a-z]+).*?\b(?P<b>[A-Z][a-z]+)\b.*?\b(?P<relation>brother|sister|sibling)\b", re.I)
+    RELATION_WORDS = r"(?:(?:younger|older)\s+)?(?:brother|sister|sibling|cousin)"
+    POSSESSIVE_RELATION = re.compile(
+        rf"\b(?P<owner>[A-Z][a-z]+)'s\s+(?P<relation>{RELATION_WORDS})\s+(?P<other>[A-Z][a-z]+)\b",
+        re.I,
+    )
+    COPULA_RELATION = re.compile(
+        rf"\b(?P<other>[A-Z][a-z]+)\s+(?:was|is)\s+(?P<owner>[A-Z][a-z]+)'s\s+(?P<relation>{RELATION_WORDS})\b",
+        re.I,
+    )
     PLACE = re.compile(r"\b(?P<place>Castle\s+[A-Z][a-z]+)\s+(?:stood|stands|is)\s+(?P<value>north|south|east|west)\s+of\s+(?P<target>the\s+city|[A-Z][a-z]+)", re.I)
     TIMELINE = re.compile(r"\b(?P<value>\w+\s+days?\s+after\s+the\s+[^,.]+)", re.I)
     RULE = re.compile(r"\b(?:in this world,\s*)?(?P<value>every\s+spell\s+[^.]+)", re.I)
@@ -43,8 +51,10 @@ class GroundedRuleExtractor:
                     if entity in {"Her", "His"} and current_character:
                         entity = current_character
                     facts.append(self._fact(FactKind.CHARACTER, entity, "eye_color", match["value"].lower(), source(sentence)))
-                if match := self.SIBLING.search(sentence):
-                    facts.append(self._fact(FactKind.RELATIONSHIP, match["a"].title(), f"relationship_{match['b'].lower()}", match["relation"].lower(), source(sentence)))
+                if match := self.POSSESSIVE_RELATION.search(sentence):
+                    facts.append(self._relationship_fact(match["owner"], match["other"], match["relation"], source(sentence)))
+                elif match := self.COPULA_RELATION.search(sentence):
+                    facts.append(self._relationship_fact(match["owner"], match["other"], match["relation"], source(sentence)))
                 if match := self.PLACE.search(sentence):
                     value = f"{match['value'].lower()} of {match['target'].lower()}"
                     facts.append(self._fact(FactKind.LOCATION, match["place"].title(), "location", value, source(sentence)))
@@ -62,3 +72,13 @@ class GroundedRuleExtractor:
     @staticmethod
     def _fact(kind: FactKind, entity: str, attribute: str, value: str, source: SourceRef) -> ExtractedFact:
         return ExtractedFact(kind=kind, entity=entity, attribute=attribute, value=value, source=source, confidence=0.95, supported=True)
+
+    @classmethod
+    def _relationship_fact(cls, owner: str, other: str, relation: str, source: SourceRef) -> ExtractedFact:
+        return cls._fact(
+            FactKind.RELATIONSHIP,
+            owner.title(),
+            f"relationship_{other.lower()}",
+            " ".join(relation.lower().split()),
+            source,
+        )
