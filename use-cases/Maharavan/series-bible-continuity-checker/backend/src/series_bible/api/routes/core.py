@@ -211,7 +211,7 @@ async def get_findings(series_id: UUID, session: Session) -> list[dict[str, Any]
     result = []
     for item in findings:
         new_source = await session.scalar(select(Evidence).where(Evidence.finding_id == item.id, Evidence.role == "NEW"))
-        old_source = await session.scalar(select(Evidence).where(Evidence.fact_id == item.existing_fact_id)) if item.existing_fact_id else None
+        old_source = await session.scalar(select(Evidence).where(Evidence.fact_id == item.existing_fact_id)) if item.existing_fact_id else await session.scalar(select(Evidence).where(Evidence.finding_id == item.id, Evidence.role == "OLD"))
         citation = lambda source: None if source is None else {"chapter": source.chapter, "section": source.section, "page": source.page, "chunk_id": source.chunk_id, "evidence_text": source.exact_text}
         result.append({"id": item.id, "type": item.type, "entity": item.entity, "attribute": item.attribute, "existing_value": item.existing_value, "new_value": item.new_value, "existing_evidence": citation(old_source), "new_evidence": citation(new_source), "explanation": item.explanation, "confidence": item.confidence, "severity": item.severity, "status": item.status})
     return result

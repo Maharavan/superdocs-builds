@@ -142,8 +142,13 @@ class WorkflowRunner:
                     result.severity,
                 )
             comparisons.append(result)
-        await self._checkpoint(self.run, "CHECK_CONTINUITY", {"comparisons": len(comparisons)})
-        return {"comparisons": comparisons}
+        intra_comparisons = self._intra_chapter_comparisons(state.get("facts", []))
+        await self._checkpoint(
+            self.run,
+            "CHECK_CONTINUITY",
+            {"comparisons": len(comparisons), "intra_chapter_conflicts": len(intra_comparisons)},
+        )
+        return {"comparisons": comparisons, "intra_comparisons": intra_comparisons}
 
     async def _classify_node(self, state: AnalysisState) -> dict[str, object]:
         await self._checkpoint(self.run, "CLASSIFY_FINDINGS", {"classified": len(state.get("comparisons", []))})
@@ -156,6 +161,7 @@ class WorkflowRunner:
             state.get("candidates", []),
             state.get("comparisons", []),
         )
+        await self._persist_intra_chapter_results(self.run, state.get("intra_comparisons", []))
         await self._checkpoint(self.run, "PERSIST_FINDINGS", {})
         return {}
 
@@ -225,6 +231,70 @@ class WorkflowRunner:
                     self.session.add(Evidence(finding_id=finding.id, document_id=existing_source.source.document_id, chapter=existing_source.source.chapter, section=existing_source.source.section, page=existing_source.source.page, chunk_id=existing_source.source.chunk_id, exact_text=existing_source.source.evidence_text, role="OLD"))
                 self.session.add(Evidence(finding_id=finding.id, document_id=fact.source.document_id, chapter=fact.source.chapter, section=fact.source.section, page=fact.source.page, chunk_id=fact.source.chunk_id, exact_text=fact.source.evidence_text, role="NEW"))
                 self.session.add(AuditEvent(run_id=run.id, actor="workflow", entity="finding", entity_id=str(finding.id), operation="FINDING_CREATED", metadata_json={"type": result.type.value}))
+
+    def _intra_chapter_comparisons(
+        self, facts: list[ExtractedFact]
+    ) -> list[tuple[ExtractedFact, ExtractedFact, object]]:
+        """Compare every distinct assertion for a claim within the same chapter.
+
+        This deliberately does not rely on Bible retrieval: the chapter may be
+        the first document in a series, or it may contradict itself while also
+        contradicting established canon.
+        """
+        grouped: dict[tuple[str, str, str, str], list[ExtractedFact]] = {}
+        for fact in facts:
+            key = (
+                str(fact.source.document_id), fact.source.chapter.casefold(),
+                fact.entity.casefold().strip(), fact.attribute.casefold().strip(),
+            )
+            grouped.setdefault(key, []).append(fact)
+        results: list[tuple[ExtractedFact, ExtractedFact, object]] = []
+        for group in grouped.values():
+            for index, fact in enumerate(group):
+                for previous in group[:index]:
+                    result = self.continuity.compare(previous, fact)
+                    if result.type in (FindingType.CONTRADICTION, FindingType.POSSIBLE_CONTRADICTION):
+                        results.append((previous, fact, result))
+        return results
+
+    async def _persist_intra_chapter_results(self, run: WorkflowRun, comparisons) -> None:
+        """Persist both source passages for conflicts found inside one chapter."""
+        for existing, fact, result in comparisons:
+            fingerprint = hashlib.sha256(
+                f"intra|{existing.source.chunk_id}|{fact.source.chunk_id}|"
+                f"{fact.entity}|{fact.attribute}|{existing.value}|{fact.value}".encode()
+            ).hexdigest()
+            duplicate = await self.session.scalar(
+                select(ContinuityFinding).where(
+                    ContinuityFinding.run_id == run.id,
+                    ContinuityFinding.fingerprint == fingerprint,
+                )
+            )
+            if duplicate:
+                continue
+            finding = ContinuityFinding(
+                run_id=run.id, series_id=run.series_id, existing_fact_id=None,
+                fingerprint=fingerprint, type=result.type.value, entity=fact.entity,
+                attribute=fact.attribute, existing_value=existing.value, new_value=fact.value,
+                explanation=(
+                    f"Conflicting statements in {fact.source.chapter}: '{existing.value}' and "
+                    f"'{fact.value}'. Human review is required."
+                ), confidence=result.confidence, severity=result.severity,
+                new_fact=fact.model_dump(mode="json"),
+            )
+            self.session.add(finding)
+            await self.session.flush()
+            for compared_fact, role in ((existing, "OLD"), (fact, "NEW")):
+                self.session.add(Evidence(
+                    finding_id=finding.id, document_id=compared_fact.source.document_id,
+                    chapter=compared_fact.source.chapter, section=compared_fact.source.section,
+                    page=compared_fact.source.page, chunk_id=compared_fact.source.chunk_id,
+                    exact_text=compared_fact.source.evidence_text, role=role,
+                ))
+            self.session.add(AuditEvent(
+                run_id=run.id, actor="workflow", entity="finding", entity_id=str(finding.id),
+                operation="INTRA_CHAPTER_FINDING_CREATED", metadata_json={"type": result.type.value},
+            ))
 
     async def _as_fact(self, record: BibleFact) -> ExtractedFact:
         evidence = await self.session.scalar(select(Evidence).where(Evidence.fact_id == record.id).order_by(Evidence.created_at))

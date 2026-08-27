@@ -14,6 +14,7 @@ class AnalysisState(TypedDict, total=False):
     facts: list[Any]
     candidates: list[Any]
     comparisons: list[Any]
+    intra_comparisons: list[Any]
     findings: list[str]
     completed_stages: list[str]
 
